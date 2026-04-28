@@ -1,6 +1,11 @@
-numpy==1.26.4
-pandas==2.2.2
-scikit-learn==1.5.1
-SQLAlchemy==2.0.36
-streamlit==1.39.0
-python-dotenv==1.0.1
+# --- UI & Data Manipulation ---
+streamlit
+pandas
+
+# --- Database ORM ---
+SQLAlchemy
+
+# --- Core Math & ML Engine ---
+numpy
+scipy
+scikit-learn
