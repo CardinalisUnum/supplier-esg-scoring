@@ -1,0 +1,22 @@
+# configs/simulation_v1.yaml
+taxonomy:
+  industries:
+    - Manufacturing
+    - Technology
+    - Agriculture
+    - Retail
+  regions:
+    - NCR
+    - CALABARZON
+    - Central Visayas
+  sizes:
+    - Small
+    - Medium
+    - Large
+    - Enterprise
+
+parameters:
+  bias_alpha_factor: 0.15
+  noise_variance: 0.05
+  esg_maturity_shape_alpha: 2.0
+  esg_maturity_shape_beta: 5.0
