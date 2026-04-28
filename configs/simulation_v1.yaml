@@ -8,7 +8,11 @@ taxonomy:
   regions:
     - NCR
     - CALABARZON
+    - Central Luzon
+    - Western Visayas
     - Central Visayas
+    - Northern Mindanao
+    - Davao Region
   sizes:
     - Small
     - Medium

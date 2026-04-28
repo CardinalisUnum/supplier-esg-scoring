@@ -1,24 +1,53 @@
-from __future__ import annotations
-
 import argparse
+from sqlalchemy.orm import Session
+from src.db.base import engine, Base, init_db
+from src.pipeline import (
+    load_config, generate_suppliers, seed_indicators, 
+    generate_surveys, generate_audits, calculate_scores
+)
 
-from src.pipeline import DataPipeline
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n-suppliers", type=int, default=100)
+    parser.add_argument("--alpha", type=float, default=0.15)
+    parser.add_argument("--beta", type=float, default=1.5)
+    args = parser.parse_args()
 
+    # 1. Reset Database [cite: 215]
+    Base.metadata.drop_all(engine)
+    init_db()
+    config = load_config()
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate synthetic ESG data and persist to SQLite.")
-    parser.add_argument("--n-suppliers", type=int, default=200, help="Number of suppliers to generate.")
-    parser.add_argument("--db-path", type=str, default="data/esg_simulation.db", help="SQLite database path.")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for deterministic generation.")
-    return parser.parse_args()
+    with Session(engine) as session:
+        try:
+            # 2. Seed Definitions & Suppliers [cite: 226-227]
+            indicators = seed_indicators()
+            session.add_all(indicators)
+            
+            suppliers = generate_suppliers(args.n_suppliers, config)
+            session.add_all(suppliers)
+            session.flush() # Ensure suppliers have IDs
 
+            # 3. Generate Surveys (True vs. Reported) [cite: 228]
+            surveys = generate_surveys(suppliers, indicators, alpha=args.alpha, beta=args.beta)
+            session.add_all(surveys)
+            session.flush()
 
-def main() -> None:
-    args = parse_args()
-    pipeline = DataPipeline(db_path=args.db_path, seed=args.seed)
-    pipeline.run(n_suppliers=args.n_suppliers)
-    print(f"Generated {args.n_suppliers} suppliers into {args.db_path}")
+            # 4. FIXED: Call Audits and Calculate Scores! [cite: 231-232]
+            print("Generating sparse audits and calculating risk tiers...")
+            audits = generate_audits(suppliers)
+            session.add_all(audits)
 
+            scores = calculate_scores(suppliers, surveys)
+            session.add_all(scores)
+
+            session.commit()
+            print("Success: Full relational dataset committed.")
+
+        except Exception as e:
+            session.rollback()
+            print(f"Error: {e}")
+            raise e
 
 if __name__ == "__main__":
-    main()
+    main()   

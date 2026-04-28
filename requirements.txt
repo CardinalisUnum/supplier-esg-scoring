@@ -1,11 +1,9 @@
-# --- UI & Data Manipulation ---
+# Core application runtime
 streamlit
 pandas
-
-# --- Database ORM ---
+plotly
 SQLAlchemy
-
-# --- Core Math & ML Engine ---
+PyYAML
 numpy
 scipy
-scikit-learn
+statsmodels

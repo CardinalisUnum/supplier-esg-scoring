@@ -203,6 +203,7 @@ cython_debug/
 data/*.db
 data/*.sqlite
 data/*.sqlite3
+data/exports/*.csv  
 .cursorignore
 .cursorindexingignore
 

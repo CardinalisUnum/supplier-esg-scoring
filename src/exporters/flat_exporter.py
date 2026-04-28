@@ -3,12 +3,15 @@ query = """
         s.id AS supplier_id,
         s.industry,
         s.region,
-        s.size,
+        s.size_tier,
+        s.operating_context,
         s.esg_maturity,
-        t.true_emissions, 
-        r.reported_emissions,
-        (t.true_emissions - r.reported_emissions) AS emissions_bias_gap
+        i.id AS indicator_name,
+        i.category,
+        sv.true_value,
+        sv.reported_value,
+        (sv.true_value - sv.reported_value) AS bias_delta
     FROM suppliers s
-    JOIN true_esg_metrics t ON s.id = t.supplier_id
-    JOIN reported_esg_metrics r ON s.id = r.supplier_id;
+    JOIN esg_surveys sv ON s.id = sv.supplier_id
+    JOIN indicator_definitions i ON sv.indicator_id = i.id;
     """

@@ -1,162 +1,150 @@
-from __future__ import annotations
-
-from dataclasses import dataclass
-
+import yaml
+import random
+import math
 import numpy as np
-from sqlalchemy.orm import Session
+from src.db.models import Supplier, IndicatorDefinition, ESGSurvey, Audit, ESGScore
 
-from src.db.base import get_session_factory, init_db
-from src.db.models import ReportedESGMetrics, Supplier, TrueESGMetrics
-from src.generators.bias_engine import BiasEngine
-from src.generators.tiers import BehavioralTierGenerator, DeclarativeTierGenerator, MechanisticTierGenerator
+# --- 1. CONFIGURATION & ENTITY GENERATION ---
 
+def load_config(filepath="configs/simulation_v1.yaml") -> dict:
+    """Loads the statistical parameters and taxonomy from the YAML config."""
+    with open(filepath, 'r') as f:
+        return yaml.safe_load(f)
 
-@dataclass
-class DataPipeline:
-    db_path: str | None = None
-    seed: int = 42
+def generate_suppliers(num_suppliers: int, config: dict) -> list[Supplier]:
+    """Generates suppliers matching the 6-table schema and Philippine context[cite: 22, 27]."""
+    suppliers = []
+    industries = config['taxonomy']['industries']
+    regions = config['taxonomy']['regions']
+    sizes = config['taxonomy']['sizes']
+    operating_contexts = ['urban', 'industrial', 'rural']
+    
+    for _ in range(num_suppliers):
+        region = random.choice(regions)
+        context = random.choice(operating_contexts)
+        
+        # Latent logic [cite: 48-50]
+        maturity = np.clip(np.random.beta(config['parameters']['esg_maturity_shape_alpha'], 
+                                          config['parameters']['esg_maturity_shape_beta']), 0, 1)
+        efficiency = np.clip(np.random.normal(1.0, 0.15), 0.6, 1.4)
+        
+        grid_int = "high" if context == "industrial" else "med" if context == "urban" else "low"
+        reg_press = "high" if region == "NCR" else "med"
+        
+        suppliers.append(Supplier(
+            industry=random.choice(industries),
+            region=region,
+            operating_context=context,
+            size_tier=random.choice(sizes),
+            scale_spend=round(np.random.lognormal(10, 1), 2),
+            esg_maturity=round(maturity, 3),
+            efficiency_factor=round(efficiency, 3),
+            grid_intensity=grid_int,
+            regulatory_pressure=reg_press
+        ))
+    return suppliers
 
-    def __post_init__(self) -> None:
-        self.rng = np.random.default_rng(self.seed)
-        self.bias_engine = BiasEngine(alpha_factor=0.2)
+# --- 2. INDICATORS & SURVEYS (THE BIAS ENGINE) ---
 
-        self.mechanistic_tier = MechanisticTierGenerator(
-            emission_factor_by_industry={
-                "manufacturing": 0.95,
-                "technology": 0.35,
-                "retail": 0.55,
-                "logistics": 1.15,
-                "agriculture": 1.35,
-            },
-            grid_intensity_by_region={
-                "NA": 0.45,
-                "EMEA": 0.35,
-                "APAC": 0.65,
-                "LATAM": 0.55,
-            },
-        )
-        self.behavioral_tier = BehavioralTierGenerator(
-            base_rate=6.0,
-            size_factor_by_size={"small": 0.6, "medium": 1.0, "large": 1.5},
-        )
-        self.declarative_tier = DeclarativeTierGenerator(
-            size_effect_by_size={"small": -0.2, "medium": 0.0, "large": 0.2}
-        )
+def seed_indicators() -> list[IndicatorDefinition]:
+    """Creates the 8 core ESG indicators mandated by the spec [cite: 66-74]."""
+    return [
+        IndicatorDefinition(id="co2_emissions", category="E", subcategory="emissions", metric_type="continuous", unit="tonsCO2e", bias_direction=-1, survey_method="direct"),
+        IndicatorDefinition(id="energy_consumption", category="E", subcategory="energy", metric_type="continuous", unit="MWh", bias_direction=-1, survey_method="direct"),
+        IndicatorDefinition(id="renewable_energy_pct", category="E", subcategory="energy", metric_type="percent", unit="%", bias_direction=1, survey_method="indirect"),
+        IndicatorDefinition(id="injury_rate", category="S", subcategory="safety", metric_type="continuous", unit="per_100FTE", bias_direction=-1, survey_method="indirect"),
+        IndicatorDefinition(id="labor_violations", category="S", subcategory="labor", metric_type="count", unit="count", bias_direction=-1, survey_method="estimated"),
+        IndicatorDefinition(id="training_hours", category="S", subcategory="training", metric_type="continuous", unit="hours", bias_direction=1, survey_method="indirect"),
+        IndicatorDefinition(id="anti_corruption_policy", category="G", subcategory="policy", metric_type="binary", unit="yes/no", bias_direction=1, survey_method="direct"),
+        IndicatorDefinition(id="esg_reporting_framework", category="G", subcategory="policy", metric_type="binary", unit="yes/no", bias_direction=1, survey_method="direct")
+    ]
 
-        init_db(self.db_path)
-        self.session_factory = get_session_factory(self.db_path)
+def generate_surveys(suppliers: list, indicators: list, alpha=0.15, beta=1.5) -> list[ESGSurvey]:
+    """Applies dynamic mathematical greenwashing bias [cite: 120-121, 140-141]."""
+    surveys = []
+    method_factors = {"direct": 1.0, "indirect": 0.6, "estimated": 0.3}
+    reg_factors = {"low": 1.0, "med": 0.8, "high": 0.6}
+    
+    for supplier in suppliers:
+        reg_factor = reg_factors.get(supplier.regulatory_pressure, 1.0)
+        bias_mag = alpha * (supplier.esg_maturity ** beta) 
+        
+        for ind in indicators:
+            # 1. Generate True Value
+            true_val = 0.0
+            if ind.metric_type == "continuous":
+                true_val = max(0, np.random.normal(100, 20) * (1.5 - supplier.esg_maturity))
+            elif ind.metric_type == "percent":
+                true_val = np.clip(np.random.normal(40 + (supplier.esg_maturity * 30), 10), 0, 100)
+            elif ind.metric_type == "count":
+                true_val = float(np.random.poisson(5 * (1 - supplier.esg_maturity)))
+            elif ind.metric_type == "binary":
+                p = 1 / (1 + math.exp(-(-1 + 3 * supplier.esg_maturity))) 
+                true_val = 1.0 if np.random.random() < p else 0.0
 
-    def _sample_supplier_features(self) -> dict[str, float | str]:
-        industry = self.rng.choice(["manufacturing", "technology", "retail", "logistics", "agriculture"])
-        size = self.rng.choice(["small", "medium", "large"], p=[0.45, 0.4, 0.15])
-        region = self.rng.choice(["NA", "EMEA", "APAC", "LATAM"])
+            # 2. Apply Distortion
+            method_factor = method_factors.get(ind.survey_method, 1.0)
+            noise = np.random.normal(0, 0.05)
+            
+            if ind.metric_type == "binary":
+                p_flip = 0.10 * method_factor * (1 - reg_factor)
+                reported_val = (1.0 - true_val) if np.random.random() < p_flip else true_val
+            else:
+                distortion = 1 + (ind.bias_direction * bias_mag * method_factor * reg_factor) + noise
+                reported_val = max(0.0, true_val * distortion)
+                if ind.metric_type == "percent": reported_val = min(100.0, reported_val)
+                if ind.metric_type == "count": reported_val = round(reported_val)
 
-        headcount_map = {"small": 120.0, "medium": 600.0, "large": 2500.0}
-        spend_map = {"small": 1.2e6, "medium": 8.5e6, "large": 3.5e7}
+            surveys.append(ESGSurvey(
+                supplier_id=supplier.id, indicator_id=ind.id, reporting_period="2025",
+                true_value=round(true_val, 2), reported_value=round(reported_val, 2),
+                data_quality_flag="estimated" if ind.survey_method == "estimated" else "self_reported"
+            ))
+    return surveys
 
-        esg_maturity = float(self.rng.uniform(0.05, 0.95))
-        efficiency = float(self.rng.uniform(0.3, 1.0))
+# --- 3. AUDITS & RISK SCORING ---
 
-        return {
-            "industry": str(industry),
-            "size": str(size),
-            "region": str(region),
-            "esg_maturity": esg_maturity,
-            "efficiency": efficiency,
-            "headcount": headcount_map[str(size)] * float(self.rng.uniform(0.7, 1.3)),
-            "spend_or_output": spend_map[str(size)] * float(self.rng.uniform(0.7, 1.4)),
-        }
+def generate_audits(suppliers: list[Supplier]) -> list[Audit]:
+    """Generates sparse audit events (approx 10% base rate) [cite: 153-159]."""
+    audits = []
+    for s in suppliers:
+        # Size and regulation drive audit probability [cite: 158-159]
+        size_mult = {"Small": 0.5, "Medium": 1.0, "Large": 2.0, "Enterprise": 2.5}.get(s.size_tier, 1.0)
+        reg_mult = {"low": 0.8, "med": 1.0, "high": 1.2}.get(s.regulatory_pressure, 1.0)
+        
+        if random.random() < (0.10 * size_mult * reg_mult):
+            score = np.clip(40 + (50 * s.esg_maturity) + np.random.normal(0, 10), 0, 100)
+            audits.append(Audit(
+                supplier_id=s.id, audit_date="2025-Q4",
+                audit_type=random.choice(["site", "document", "third_party"]),
+                audit_score=round(score, 2),
+                findings_count=np.random.poisson(max(0.5, 5 * (1 - s.esg_maturity)))
+            ))
+    return audits
 
-    def _compute_true_metrics(self, supplier_features: dict[str, float | str]) -> dict[str, float | int | bool]:
-        outputs: dict[str, float | int | bool] = {}
-        outputs.update(self.mechanistic_tier.generate(supplier_features, self.rng))
-        outputs.update(self.behavioral_tier.generate(supplier_features, self.rng))
-        outputs.update(self.declarative_tier.generate(supplier_features, self.rng))
-        return outputs
+def calculate_scores(suppliers: list[Supplier], surveys: list[ESGSurvey]) -> list[ESGScore]:
+    """Calculates weighted ESG scores and risk tiers [cite: 201-210]."""
+    scores = []
+    for s in suppliers:
+        s_surveys = [sv for sv in surveys if sv.supplier_id == s.id]
+        
+        # Calculate sub-scores [cite: 202-204]
+        e_vals = [sv.reported_value for sv in s_surveys if sv.indicator_id in ["co2_emissions", "energy_consumption", "renewable_energy_pct"]]
+        s_vals = [sv.reported_value for sv in s_surveys if sv.indicator_id in ["injury_rate", "labor_violations", "training_hours"]]
+        g_vals = [sv.reported_value for sv in s_surveys if sv.indicator_id in ["anti_corruption_policy", "esg_reporting_framework"]]
 
-    def _compute_reported_metrics(
-        self,
-        true_metrics: dict[str, float | int | bool],
-        esg_maturity: float,
-    ) -> dict[str, float | int | bool]:
-        reported_emissions = self.bias_engine.distort(
-            true_value=float(true_metrics["true_emissions"]),
-            esg_maturity=esg_maturity,
-            bias_direction=-1,
-            noise_variance=0.015,
-            rng=self.rng,
-            floor=0.0,
-        )
-        reported_violations = self.bias_engine.distort(
-            true_value=float(true_metrics["true_violations"]),
-            esg_maturity=esg_maturity,
-            bias_direction=-1,
-            noise_variance=0.03,
-            rng=self.rng,
-            floor=0.0,
-        )
-        reported_injury_rate = self.bias_engine.distort(
-            true_value=float(true_metrics["true_injury_rate"]),
-            esg_maturity=esg_maturity,
-            bias_direction=-1,
-            noise_variance=0.03,
-            rng=self.rng,
-            floor=0.0,
-        )
+        e_score = np.mean(e_vals) if e_vals else 50
+        s_score = np.mean(s_vals) if s_vals else 50
+        g_score = (sum(g_vals) / len(g_vals)) * 100 if g_vals else 50
 
-        true_policy = bool(true_metrics["true_policy_exists"])
-        if true_policy:
-            policy_claim_probability = min(1.0, 0.85 + 0.15 * esg_maturity)
-        else:
-            policy_claim_probability = max(0.0, 0.35 - 0.25 * esg_maturity)
-        reported_policy_exists = bool(self.rng.uniform(0.0, 1.0) < policy_claim_probability)
+        # Weighted overall score [cite: 206]
+        overall = np.clip((0.4 * e_score) + (0.3 * s_score) + (0.3 * g_score), 0, 100)
+        tier = "high" if overall < 40 else "med" if overall < 70 else "low"
 
-        return {
-            "reported_emissions": float(reported_emissions),
-            "reported_violations": int(round(reported_violations)),
-            "reported_injury_rate": float(reported_injury_rate),
-            "reported_policy_exists": reported_policy_exists,
-        }
-
-    def generate_one(self, session: Session) -> Supplier:
-        features = self._sample_supplier_features()
-
-        supplier = Supplier(
-            industry=str(features["industry"]),
-            size=str(features["size"]),
-            region=str(features["region"]),
-            esg_maturity=float(features["esg_maturity"]),
-            efficiency=float(features["efficiency"]),
-        )
-        session.add(supplier)
-        session.flush()
-
-        true_metrics = self._compute_true_metrics(features)
-        reported_metrics = self._compute_reported_metrics(true_metrics, float(features["esg_maturity"]))
-
-        session.add(
-            TrueESGMetrics(
-                supplier_id=supplier.id,
-                true_emissions=float(true_metrics["true_emissions"]),
-                true_violations=int(true_metrics["true_violations"]),
-                true_injury_rate=float(true_metrics["true_injury_rate"]),
-                true_policy_exists=bool(true_metrics["true_policy_exists"]),
-            )
-        )
-        session.add(
-            ReportedESGMetrics(
-                supplier_id=supplier.id,
-                reported_emissions=float(reported_metrics["reported_emissions"]),
-                reported_violations=int(reported_metrics["reported_violations"]),
-                reported_injury_rate=float(reported_metrics["reported_injury_rate"]),
-                reported_policy_exists=bool(reported_metrics["reported_policy_exists"]),
-            )
-        )
-
-        return supplier
-
-    def run(self, n_suppliers: int = 100) -> None:
-        with self.session_factory() as session:
-            for _ in range(n_suppliers):
-                self.generate_one(session)
-            session.commit()
+        scores.append(ESGScore(
+            supplier_id=s.id, reporting_period="2025",
+            environment_score=round(e_score, 2), social_score=round(s_score, 2),
+            governance_score=round(g_score, 2), overall_esg_score=round(overall, 2),
+            risk_tier=tier
+        ))
+    return scores
